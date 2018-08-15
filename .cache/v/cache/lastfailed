@@ -1,1 +1,3 @@
-{}
+{
+  "constrained.py::test_ecvx": true
+}

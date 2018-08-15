@@ -19,11 +19,12 @@ class EqualityCvx:
         self._hessian = hessian_f(x0)
         self._grad = grad_f(x0)
         self.x = x0
+        self.n_iter = 0
         self._decrement = None
         self.optimal = None
         self.step = None
-        self.w = None
-        self.v = x0   # next dual variable can be calculated directly by v_plus = w
+        self.w = np.random.randn(A.shape[0])
+        self.v = np.random.randn(A.shape[0])  # next dual variable can be calculated directly by v_plus = w
         self.v_plus = self.w
         self.dual_step = None
 
@@ -35,7 +36,7 @@ class EqualityCvx:
         _hessian = self._hessian = self.hessian(x)
         _grad = self._grad = self.grad(x)
         A, b= self.A, self.b
-        n, p = A.shape[0]
+        n, p = A.shape
 
         first_col = np.vstack([_hessian, A])
         _zero = np.zeros((n, n))
@@ -47,29 +48,31 @@ class EqualityCvx:
         else:
             RHS = np.concatenate((-_grad, A @ x - b))[:, np.newaxis]
         sol = solve(KKT_matrix, RHS)
-        step = sol.flatten()[:n]
-        w = sol.flatten()[n:]
+        step = sol.flatten()[:p]
+        w = sol.flatten()[-n:]
+        self.dual_step = w - self.w
         self.step = step
         self.w = w
         self.v_plus = w
-        self.dual_step = w - self.v
         return step
 
     @property
     def newton_decrement(self):
-        grad, hessian = self._grad, self._hessian
-        self._decrement = (grad.T@inv(hessian)@grad)**(1/2)
+        step, hessian = self.step, self._hessian
+        self._decrement = (step.T@hessian@step)**(1/2)
         return self._decrement
 
     def newton_method(self):
         while True:
             epsilon, f0, alpha, beta = self.epsilon, self.f0, self.alpha, self.beta
-            step, w = self.newton_step(feasible=True)
+            step = self.newton_step(feasible=True)
             decrement = self.newton_decrement
+            print(decrement)
             if 1/2 * decrement**2 < epsilon:
                 break
-            t = line_search(step, f0, self._grad, alpha=alpha, beta=beta)
+            t = line_search(step, self.x, f0, self._grad, alpha=alpha, beta=beta)
             self.x += t*step
+            self.n_iter += 1
         self.optimal = self.x
 
     def infeasible_newton(self):
@@ -152,6 +155,25 @@ class IneCvx(EqualityCvx):
 
     def hessian_ft(self, t):
         return NotImplementedError
+
+
+def test_ecvx():
+    # equality constrained analytic centering problem
+    # n = 3
+    # m = 2
+    A = np.random.randn(2, 3)
+    x0 = np.abs(np.random.randn(3))
+    b = A@x0
+    f0 = lambda x: -np.sum(np.log(x))
+    grad_f = lambda x: np.asarray(-1/x)
+    hessian_f = lambda x: np.diag(1/x**2)
+    ecvx = EqualityCvx(f0, grad_f, hessian_f, A, b, x0)
+    x = ecvx.minimize()
+    return ecvx
+
+
+if __name__ == "__main__":
+    a = test_ecvx()
 
 
 
