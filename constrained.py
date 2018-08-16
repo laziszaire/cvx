@@ -80,24 +80,26 @@ class EqualityCvx:
         while True:
             _ = self.newton_step(feasible=False)
             t = self.infeasible_line_search()
-            self.x += t*self.step
-            self.v += t*self.dual_step
-            if np.isclose(A@self.x, b) and (self.residual(self.x, self.v) <= epsilon):
+            nr = norm(self.residual(self.x, self.v))
+            if np.isclose(A@self.x, b).all() and (nr <= epsilon):
                 break
+            self.x += t * self.step
+            self.v = self.w
         self.optimal = self.x
 
     def residual(self, x, v):
-        A, b, _grad = self.A, self.b, self._grad
-        r = np.vstack([_grad + A.T@v, A@x - b])
+        A, b, _grad = self.A, self.b, self.grad(x)
+        r = np.concatenate([_grad + A.T@v, A@x - b])
         return r
 
     def infeasible_line_search(self):
         t = 1
         alpha, beta, x, v = self.alpha, self.beta, self.x, self.v
-        norm_r = norm(self.residual(x, v))
+        nr_before = norm(self.residual(x, v))
         while True:
-            nr = self.residual(x + t*self.step, v + t*self.dual_step)
-            if norm(nr) < (1-alpha*t)*norm_r:
+            print('line search')
+            nr = norm(self.residual(x + t*self.step, v + t*self.dual_step))
+            if nr < (1-alpha*t)*nr_before:
                 break
             t = beta * t
         return t
@@ -172,8 +174,22 @@ def test_ecvx():
     return ecvx
 
 
+def test_ecvx_feasible():
+    A = np.random.randn(2, 3)
+    x0 = np.ones(3)
+    b = A@x0
+    f0 = lambda x: -np.sum(np.log(x))
+    grad_f = lambda x: np.asarray(-1/x)
+    hessian_f = lambda x: np.diag(1/x**2)
+    ecvx = EqualityCvx(f0, grad_f, hessian_f, A, b, x0)
+    x = ecvx.minimize(feasible=False)
+    A = ecvx.A
+    dual = -np.sum(np.log(1 / (A.T @ ecvx.w))) + ecvx.w @ (A @ (1 / (A.T @ ecvx.w)) - ecvx.b)
+    assert (f0(x) - dual) <= 1e-5
+
+
 if __name__ == "__main__":
-    a = test_ecvx()
+    a = test_ecvx_feasible()
 
 
 
