@@ -46,7 +46,7 @@ class EqualityCvx:
         if feasible:
             RHS = np.concatenate((-_grad, np.zeros(n)))[:, np.newaxis]
         else:
-            RHS = np.concatenate((-_grad, A @ x - b))[:, np.newaxis]
+            RHS = -np.concatenate((_grad, A@x - b))[:, np.newaxis]
         sol = solve(KKT_matrix, RHS)
         step = sol.flatten()[:p]
         w = sol.flatten()[-n:]
@@ -174,10 +174,10 @@ def test_ecvx():
     return ecvx
 
 
-def test_ecvx_feasible():
+def test_ecvx_infeasible():
     A = np.random.randn(2, 3)
     x0 = np.ones(3)
-    b = A@x0
+    b = A@np.abs(np.random.randn(3))
     f0 = lambda x: -np.sum(np.log(x))
     grad_f = lambda x: np.asarray(-1/x)
     hessian_f = lambda x: np.diag(1/x**2)
@@ -185,11 +185,14 @@ def test_ecvx_feasible():
     x = ecvx.minimize(feasible=False)
     A = ecvx.A
     dual = -np.sum(np.log(1 / (A.T @ ecvx.w))) + ecvx.w @ (A @ (1 / (A.T @ ecvx.w)) - ecvx.b)
+    print('dual grap is {}'.format(f0(x) - dual))
     assert (f0(x) - dual) <= 1e-5
 
 
 if __name__ == "__main__":
-    a = test_ecvx_feasible()
+    a = test_ecvx_infeasible()
+
+
 
 
 
