@@ -3,6 +3,7 @@ from unconstrained import line_search
 from numpy.linalg import inv, solve, norm
 import numpy as np
 import copy
+from unconstrained import gradient_descent
 
 
 class EqualityCvx:
@@ -27,6 +28,8 @@ class EqualityCvx:
         self.v = np.random.randn(A.shape[0])  # next dual variable can be calculated directly by v_plus = w
         self.v_plus = self.w
         self.dual_step = None
+        self.dual = None
+        self.duality_gap = None
 
     def newton_step(self, feasible=True):
         """
@@ -116,47 +119,86 @@ class EqualityCvx:
 
 
 def log_barrier(u, t):
-    return -(1/t)*np.log(u)
+    return -(1/t)*np.log(-u)
 
 
 class IneCvx(EqualityCvx):
 
-    def __init__(self, f0, fis, grad_f, hessian_f, A, b, x0, epsilon=1e-5, alpha=.3, beta=.8, u=20):
-        super().__init__(f0, grad_f, hessian_f, A, b, x0, epsilon=epsilon, alpha=alpha, beta=beta)
+    def __init__(self, f0, fis, grads, hessians, A, b, x0, dual=None, epsilon=1e-5, alpha=.3, beta=.8, u=20):
+        super().__init__(f0, grads[0], hessians[0], A, b, x0, epsilon=epsilon, alpha=alpha, beta=beta)
         self.fis = fis
         self.u = u
-        self.ecvx = self.copy()
+        self.grad_fis = grads[1:]
+        self.hessian_fis = hessians[1:]
+        self.ecvx = EqualityCvx(f0, grads[0], hessians[0], A, b, x0)
+        self.dual = dual
 
     def copy(self):
         return copy.deepcopy(self)
 
+    def minimize(self, feasible=True):
+        x = self.barrier_method()
+        return x
+
     def barrier_method(self):
         # centering step
-        t = self.choose_t()
+        t = self.init_t()
         fis = self.fis
         m = len(fis)
         while True:
             # outer loop
-            self.ecvx = self.copy()
-            self.ecvx.f0 = lambda x: t * (self.f0(x) + sum(log_barrier(_fi(x), t) for _fi in fis))
+            self.ecvx.f0 = lambda x: t*self.f0(x) + sum(log_barrier(_fi(x), 1) for _fi in fis)  # 细心
             self.ecvx.grad = self.grad_ft(t)
             self.ecvx.hessian = self.hessian_ft(t)
             self.ecvx.x0 = self.x
             self.x = self.ecvx.minimize()
+            self.duality_gap = m/t  # lambda = -1/(t*fi(x)), fi(x)<=0 ==> lambda >=0
             if m/t < self.epsilon:
                 break
             t *= self.u
+            print(f"duality gap is {self.duality_gap}")
         self.optimal = self.x
         return self.x
 
-    def choose_t(self):
-        return NotImplementedError
-
     def grad_ft(self, t):
-        return NotImplementedError
+        # grad of logarithm barrier = sum(-grad_fi/fi)
+        grad_barrier = lambda x: sum(-gi(x)/fi(x) for fi, gi in zip(self.fis, self.grad_fis))
+        _grad = lambda x: t*self.grad(x) + grad_barrier(x)
+        return _grad
 
     def hessian_ft(self, t):
-        return NotImplementedError
+        x_xt = lambda x: x[:, np.newaxis]@x[:, np.newaxis].T
+        hessian_barrier = lambda x: sum(x_xt(gi(x))/(fi(x)**2) - hi(x)/fi(x)
+                                        for fi, gi, hi in zip(self.fis, self.grad_fis, self.hessian_fis))
+        _hessian = lambda x: t*self.hessian(x) + hessian_barrier(x)
+        return _hessian
+
+    def init_t(self, method=None):
+        # todo test
+        if method == 'dual':
+            m = len(self.fis)
+            v = np.random.randn(self.A.shape[0])
+            _lambda = np.asarray([1])
+            eita = self.f0(self.x0) - self.dual(_lambda, v)
+            t0 = m/eita
+        elif method == 'central_path':
+            # minimizer residual norm(t*grad)
+            residual = lambda t, grad, grad_barrier, A, v: t*grad + grad_barrier + A.T@v
+            grad_barrier = lambda x: sum(-gi(x) / fi(x) for fi, gi in zip(self.fis, self.grad_fis))
+            f0 = lambda x: residual(x[0], self.grad(self.x0), grad_barrier(self.x0), self.A, x[1:])
+            _grad = lambda x: np.concatenate(2*f0(x).dot(self.grad(self.x0)),
+                                             2*f0(x)@self.A.T)
+            x0 = np.random.randn(self.A.shape[0]+1)
+            x = gradient_descent(x0, f0, _grad)
+            t0 = x[0]
+        elif method == 'hessian_central':
+            return NotImplementedError
+        elif method == 'epsilon':
+            m = len(self.fis)
+            t0 = m/self.epsilon * 100
+        elif method is None:
+            t0 = 10
+        return t0
 
 
 def test_ecvx():
@@ -175,6 +217,10 @@ def test_ecvx():
 
 
 def test_ecvx_infeasible():
+    """
+    test infeasible start Newton method equality constrained problem
+    :return:
+    """
     A = np.random.randn(2, 3)
     x0 = np.ones(3)
     b = A@np.abs(np.random.randn(3))
@@ -185,30 +231,28 @@ def test_ecvx_infeasible():
     x = ecvx.minimize(feasible=False)
     A = ecvx.A
     dual = -np.sum(np.log(1 / (A.T @ ecvx.w))) + ecvx.w @ (A @ (1 / (A.T @ ecvx.w)) - ecvx.b)
-    print('dual grap is {}'.format(f0(x) - dual))
+    print(f'dual grap is {f0(x) - dual}')
     assert (f0(x) - dual) <= 1e-5
+    return ecvx
+
+
+def test_barrier():
+    A = np.random.randn(2, 3)
+    x0 = np.abs(np.random.randn(3))
+    b = A @ x0
+    f0 = lambda x: -np.sum(np.log(x))
+    grad_f = lambda x: np.asarray(-1 / x)
+    hessian_f = lambda x: np.diag(1 / x ** 2)
+    # sum(x) <= 1
+    fis = (lambda x: x.dot(np.ones_like(x)) - 100,)
+    # todo: dual
+    grads = (grad_f, lambda x: np.ones_like(x))
+    hessians = (hessian_f, lambda x: np.zeros((x.shape[0], x.shape[0])))
+    iecvx = IneCvx(f0, fis, grads, hessians, A, b, x0)
+    _ = iecvx.minimize()
+    return iecvx
 
 
 if __name__ == "__main__":
-    a = test_ecvx_infeasible()
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
+    a = test_barrier()
+    print(a)
